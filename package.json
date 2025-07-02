@@ -1,0 +1,43 @@
+{
+   "name": "auth",
+   "version": "0.0.0",
+   "private": true,
+   "main": "app.ts",
+   "scripts": {
+      "start": "ts-node ./app.ts",
+      "client": "ts-node ./clientmock.ts",
+      "start-orm": "ts-node ./src/index.ts",
+      "typeorm": "typeorm-ts-node-commonjs"
+   },
+   "dependencies": {
+      "@aws-sdk/client-s3": "^3.828.0",
+      "@aws-sdk/s3-request-presigner": "^3.828.0",
+      "bcryptjs": "^3.0.2",
+      "cookie-parser": "~1.4.4",
+      "dotenv": "^16.5.0",
+      "express": "^5.1.0",
+      "http-errors": "~1.6.3",
+      "jsonwebtoken": "^9.0.2",
+      "multer": "^1.4.5-lts.2",
+      "mysql2": "^3.14.1",
+      "pg": "^8.14.1",
+      "reflect-metadata": "^0.2.2",
+      "sharp": "^0.34.1",
+      "socket.io": "^4.8.1",
+      "socket.io-client": "^4.8.1",
+      "ts-node": "^10.9.2",
+      "tslog": "^4.9.3",
+      "typeorm": "^0.3.22",
+      "uuid": "^11.1.0"
+   },
+   "devDependencies": {
+      "@types/cookie-parser": "^1.4.8",
+      "@types/express": "^5.0.1",
+      "@types/http-errors": "^2.0.4",
+      "@types/jsonwebtoken": "^9.0.9",
+      "@types/multer": "^1.4.12",
+      "@types/node": "^22.13.10",
+      "ts-node": "^10.9.2",
+      "typescript": "^5.8.2"
+   }
+}

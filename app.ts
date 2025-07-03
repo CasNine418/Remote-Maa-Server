@@ -534,11 +534,11 @@ interface ClientToServerEvents {
     authUser: (user: string, device: string, callback: (res: number) => void) => void;
     hello: (data: any) => void;
 
-    userGetTask: (callback: (tasks: MaaTask[]) => void) => void;
+    userGetTask: (callback: (res: number, tasks: MaaTask[]) => void) => void;
     userPushTask: (task: MaaTask, callback: (res: number) => void) => void;
 }
 
-interface InterServerEvents {}
+interface InterServerEvents { }
 
 interface SocketData {
     user: string;
@@ -569,24 +569,58 @@ class MaaWSServer {
 
     private bindSubEvent(socket: Socket<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>) {
         socket.on('hello', (data: any) => {
-            Log.info(`${socket.data.user} ${socket.data.device} hello ${JSON.stringify(data)}`);
+            Log.debug(`${socket.data.user} ${socket.data.device} hello ${JSON.stringify(data)}`);
         });
 
-        socket.on('userGetTask', async (f: (tasks: MaaTask[]) => void) => {
-
+        socket.on('userGetTask', async (c: (res: number, tasks: MaaTask[]) => void) => {
+            try {
+                const tasks = await maaService.userGetTask(socket.data.user, socket.data.device);
+                c(1, tasks);
+            } catch (error) {
+                Log.error("Failed to get task: " + error)
+                c(-1, []);
+            }
         })
 
-        socket.on('userPushTask', async (task: MaaTask, f: (res: any) => void) => {
-
+        socket.on('userPushTask', async (task: MaaTask, c: (res: any) => void) => {
+            try {
+                const taskCache: MaaTaskCache = {
+                    ...task,
+                    user: socket.data.user,
+                    device: socket.data.device,
+                    timeout: null as unknown as NodeJS.Timeout
+                };
+                await maaService.userPushCachedTasks(socket.data.user, socket.data.device, [taskCache]);
+                c(1);
+            } catch (error) {
+                Log.error("Failed to push task:", error);
+                c(-1);
+            }
         })
+    }
 
+    private callerTrigger() {
         this.outerCaller.on('MAA_TASK_GOT', (user, device, tasks: MaaTask[]) => {
-            socket.emit('MaaReceiveTask', user, device, tasks, (res) => {});
+            this.io.fetchSockets().then(sockets => {
+                sockets.forEach(socket => {
+                    if (socket.data.user === user && socket.data.device === device) {
+                        socket.emit('MaaReceiveTask', user, device, tasks, (res) => { });
+                    }
+                });
+            })
         })
 
-        // 这里的task是MAA汇报的uuid
         this.outerCaller.on('MAA_TASK_REPORTED', (user, device, task: string) => {
-            socket.emit('MaaReportTask', user, device, task, (res) => {});
+            this.io.fetchSockets().then(sockets => {
+                sockets.forEach(socket => {
+                    if (socket.data.user === user && socket.data.device === device) {
+                        socket.emit('MaaReportTask', user, device, task, (res) => { });
+                    }
+                });
+            })
+        })
+        this.outerCaller.on('error', (error) => {
+            Log.error('OuterCaller Error: ' + error);
         })
     }
 
@@ -628,6 +662,7 @@ class MaaWSServer {
                 }
             });
         })
+        this.callerTrigger();
     }
 }
 

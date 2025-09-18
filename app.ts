@@ -21,14 +21,16 @@ import { Device } from './orm/entity/device';
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import presigner from "@aws-sdk/s3-request-presigner";
 import { Server as IOServer, Socket } from 'socket.io';
+import * as promClient from 'prom-client';
 
 import * as dotenv from 'dotenv';
 import { EventEmitter } from 'stream';
+import { envConfig } from './env';
 dotenv.config();
 
 const app = express();
 
-const env = process.env.NODE_ENV || 'dev';
+const env = envConfig.server.nodeEnv;
 
 
 app.use(cors());
@@ -53,10 +55,10 @@ class AWSS3Service {
     constructor(bucketName: string) {
         this.bucketName = bucketName;
         this.s3 = new S3Client({
-            region: process.env.OSS_S3_REGION!,
+            region: envConfig.s3.region!,
             credentials: {
-                accessKeyId: process.env.OSS_S3_ACCESS_KEY!,
-                secretAccessKey: process.env.OSS_S3_SECRET_KEY!
+                accessKeyId: envConfig.s3.accessKeyId!,
+                secretAccessKey: envConfig.s3.secretAccessKey!
             }
         })
     }
@@ -153,7 +155,7 @@ class AWSS3Service {
     }
 }
 
-const picturesBucketName = process.env.OSS_S3_PICTURE_BUCKET!;
+const picturesBucketName = envConfig.s3.bucket;
 const defaultS3Service = new AWSS3Service(picturesBucketName);
 
 // maa service
@@ -280,7 +282,7 @@ class MaaController {
         if (objTask) {
             Object.assign(objTask, task);
             this.taskRepository.save(objTask)
-                .then(() => Log.info("Task updated" + task.uuid))
+                .then(() => Log.info("Task updated " + task.uuid))
                 .catch(err => { throw new Error(err) })
         } else {
             throw new Error("Task not found")
@@ -309,7 +311,13 @@ class MaaController {
             }, ttl);
 
             this.addTaskToDatabase(user, device, task)
-                .then(() => this.pullTaskCache[`${user}:${device}`].push(task))
+                .then(() => {
+                    if (this.pullTaskCache[`${user}:${device}`]) {
+                        this.pullTaskCache[`${user}:${device}`].push(task);
+                    } else {
+                        this.pullTaskCache[`${user}:${device}`] = [task];
+                    }
+                })
                 .catch(err => { throw new Error(err) })
         })
 
@@ -409,7 +417,9 @@ class MaaController {
         const user = await this.userRepository.findOne({
             where: { name: username },
             relations: {
-                devices: true,
+                devices: {
+                    tasks: true,
+                },
             }
         });
 
@@ -484,7 +494,13 @@ maaRouter.post('/getTask', (req: Request, res: Response, next: NextFunction) => 
 
     maaService.maaGetTask(user, device)
         .then(tasks => {
-            sendClientMessage.sendOKMessage(res, 'OK', tasks);
+            const sendTasks = tasks.map(task => {
+                return {
+                    ...task,
+                    type: TaskType[task.type],
+                };
+            });
+            sendClientMessage.sendTaskMessage(res, 'OK', sendTasks);
             busCaller.emit('MAA_TASK_GOT', user, device, tasks);
         })
         .catch(err => {
@@ -547,7 +563,7 @@ interface SocketData {
 
 class MaaWSServer {
     private controller: MaaController;
-    private io = new IOServer<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(3001, {});
+    private io = new IOServer<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(3001, { cors: { origin: "*" } });
     private outerCaller: Caller;
 
     private static CallbackError = {
@@ -677,7 +693,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
     res.locals.message = err.message;
-    res.locals.error = env === 'dev' ? err : {};
+    res.locals.error = env === 'development' ? err : {};
 
     if (err instanceof SyntaxError && 'body' in err) {
         sendClientMessage.sendErrorMessage(res, 400, "Invalid JSON", {});
@@ -695,9 +711,22 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
 /**
  * Get port from environment and store in Express.
  */
-const port = normalizePort(process.env.AUTHPAK_API_PORT || '3000');
+const port = normalizePort(envConfig.server.port);
 app.set('port', port);
-const mode = process.env.MODE;
+const mode = envConfig.server.mode;
+const httpRequestDuration = new promClient.Histogram({
+    name: 'http_request_duration_seconds',
+    help: 'Duration of HTTP requests in seconds',
+    labelNames: ['method', 'route', 'code'],
+});
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+    const end = httpRequestDuration.startTimer();
+    res.on('finish', () => {
+        end({ method: req.method, route: req.route?.path || req.path, code: res.statusCode });
+    });
+    next();
+});
 
 /**
  * Create HTTP server.
@@ -714,8 +743,8 @@ if (mode === 'http') {
     server.on('listening', () => onListening(server));
 } else if (mode === 'https') {
     const httpsOptions = {
-        key: fs.readFileSync('./cert/privkey.key'),
-        cert: fs.readFileSync('./cert/domain.crt'),
+        key: fs.readFileSync(envConfig.ssl.keyPath),
+        cert: fs.readFileSync(envConfig.ssl.certPath),
     };
     const server = https.createServer(httpsOptions, app);
     server.listen(port);

@@ -1,0 +1,14 @@
+{
+  "pkg": {
+    "targets": ["node18-linux-x64"],
+    "outputPath": "dist",
+    "scripts": [
+      "dist/**/*.js"
+    ],
+    "exclude": [
+      "node_modules/tslib/**"
+    ]
+  },
+  "pkg_fetch_version": "3.4",
+  "node_version": "18.5.0"
+}

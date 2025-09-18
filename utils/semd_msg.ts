@@ -16,6 +16,19 @@ class SendClientMessage {
         });
     }
 
+    public sendTaskMessage<T, M>(res: Response, message: string, task: T, meta?: M) {
+        const responseMeta = {
+            time: new Date(),
+            ...(meta || {})
+        };
+
+        res.status(200).json({
+            message,
+            tasks: task,
+            meta: responseMeta
+        });
+    }
+
     public sendErrorMessage<T>(res: Response, status: number, message: string, data: T) {
         res.status(status).json({
             message,

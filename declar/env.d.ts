@@ -18,6 +18,7 @@ export declare const envConfig: {
     };
     readonly s3: {
         readonly region: string;
+        readonly endpoint: string;
         readonly accessKeyId: string;
         readonly secretAccessKey: string;
         readonly bucket: string;

@@ -611,7 +611,14 @@ const busCaller = new Caller();
 // routers
 const maaRouter = express.Router();
 
+const MAA_USER_AGENT_REGEX = /^MaaWpfGui\/v\d+\.\d+\.\d+.*$/;
+
 maaRouter.post('/getTask', (req: Request, res: Response, next: NextFunction) => {
+    const userAgent = req.get('User-Agent') || '';
+    if (!MAA_USER_AGENT_REGEX.test(userAgent)) {
+        sendClientMessage.sendErrorMessage(res, 403, 'Forbidden: Invalid User-Agent', null);
+        return;
+    }
     const { user, device } = req.body;
 
     if (!user || !device) {
@@ -674,6 +681,12 @@ maaRouter.post('/getTask', (req: Request, res: Response, next: NextFunction) => 
 })
 
 maaRouter.post('/reportStatus', (req: Request, res: Response, next: NextFunction) => {
+    const userAgent = req.get('User-Agent') || '';
+    if (!MAA_USER_AGENT_REGEX.test(userAgent)) {
+        sendClientMessage.sendErrorMessage(res, 403, 'Forbidden: Invalid User-Agent', null);
+        return;
+    }
+
     const { user, device, task } = req.body;
     if (!user || !device || !task) {
         sendClientMessage.sendErrorMessage(res, 400, 'Invalid request', {});

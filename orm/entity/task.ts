@@ -22,16 +22,16 @@ export class Task {
 
     @Column('json')
     payload!: object;
-    
+
     @Column()
     taskbind!: string;
 
     @Column()
     snapshotbind!: string;
 
-    @Column()
-    start!: number;
+    @Column('datetime')
+    start!: Date;
 
-    @Column()
-    time!: number;
+    @Column('datetime')
+    time!: Date;
 }

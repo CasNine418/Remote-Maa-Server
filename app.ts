@@ -255,7 +255,7 @@ class MaaController {
         this.taskRepository.save(objTask)
             .then(() => { })
             .catch((err) => {
-                throw new Error(err)
+                throw new Error(err);
             })
     }
 
@@ -300,13 +300,16 @@ class MaaController {
      * @param tasks 
      */
     public async userPushCachedTasks(user: string, device: string, tasks: MaaTaskCache[]): Promise<void> {
-        const ttl = 1000 * 60 * 2;
+        const ttl = 1000 * 60;
 
         tasks.forEach(task => {
             // task.status = TaskStatus.PENDING;
             task.timeout = setTimeout(() => {
                 this.clearCachedTask(user, device, task.uuid, task.timeout, TaskStatus.TIMEOUT)
-                    .then(() => Log.info("Clear cached task " + task.uuid))
+                    .then(() => {
+                        busCaller.emit("MAA_TASK_STATUS_CHANGED", user, device, TaskStatus.TIMEOUT);
+                        Log.info("Clear cached task " + task.uuid);
+                    })
                     .catch(err => { throw new Error(err) });
             }, ttl);
 
@@ -366,6 +369,7 @@ class MaaController {
 
                     if (taskStatus === TaskStatus.SUCCESS) {
                         const base64Str = taskPayload;
+                        task.time = new Date();
                         try {
                             const buffer = Buffer.from(base64Str, 'base64');
                             const key = `Arknights/task_report_2/${user}/${device}/${task.uuid}.png`;
@@ -434,6 +438,79 @@ class MaaController {
         }
 
         return device.tasks;
+    }
+
+    /**
+     * 用户获取任务（分页版本）
+     * @description 用户从数据库拉取任务列表，支持分页加载
+     * @param username 
+     * @param deviceId 
+     * @param offset 偏移量，从第几条开始获取
+     * @param limit 获取任务数量限制
+     * @returns 
+     */
+    public async userGetTasksPaginated(
+        username: string, 
+        deviceId: string, 
+        offset: number = 0, 
+        limit: number = 50
+    ): Promise<{ tasks: MaaTask[], totalCount: number }> {
+        const user = await this.userRepository.findOne({
+            where: { name: username },
+            relations: {
+                devices: true,
+            }
+        });
+
+        if (!user) {
+            throw new Error('User not found');
+        }
+
+        const device = user.devices.find(d => d.deviceId === deviceId);
+
+        if (!device) {
+            throw new Error('Device not found');
+        }
+
+        // 获取任务总数
+        const totalCount = await this.taskRepository.count({
+            where: {
+                device: {
+                    id: device.id
+                }
+            }
+        });
+
+        // 获取任务，按开始时间倒序排列，支持分页
+        const tasks = await this.taskRepository.find({
+            where: {
+                device: {
+                    id: device.id
+                }
+            },
+            order: {
+                start: "DESC"
+            },
+            skip: offset,
+            take: limit
+        });
+
+        // 转换为MaaTask格式
+        const maaTasks: MaaTask[] = tasks.map(task => ({
+            uuid: task.uuid,
+            status: task.status,
+            type: task.type,
+            payload: task.payload,
+            taskbind: task.taskbind,
+            snapshotbind: task.snapshotbind,
+            start: task.start,
+            time: task.time
+        }));
+
+        return {
+            tasks: maaTasks,
+            totalCount
+        };
     }
 
     public async userInit(username: string, deviceId: string): Promise<typeof MaaController.UserInitState[keyof typeof MaaController.UserInitState]> {
@@ -544,6 +621,7 @@ interface ServerToClientEvents {
     MaaReceiveTask: (user: string, device: string, tasks: MaaTask[], callback: (res: number) => void) => void;
     // 汇报任务
     MaaReportTask: (user: string, device: string, task: string, callback: (res: number) => void) => void;
+    MaaTaskStatusChanged: (user: string, device: string, status: TaskStatus, callback: (res: number) => void) => void;
 }
 
 interface ClientToServerEvents {
@@ -551,6 +629,7 @@ interface ClientToServerEvents {
     hello: (data: any) => void;
 
     userGetTask: (callback: (res: number, tasks: MaaTask[]) => void) => void;
+    userGetTasksPaginated: (offset: number, limit: number, callback: (res: number, data: { tasks: MaaTask[], totalCount: number }) => void) => void;
     userPushTask: (task: MaaTask, callback: (res: number) => void) => void;
 }
 
@@ -598,15 +677,26 @@ class MaaWSServer {
             }
         })
 
+        socket.on('userGetTasksPaginated', async (offset: number, limit: number, c: (res: number, data: { tasks: MaaTask[], totalCount: number }) => void) => {
+            try {
+                const result = await maaService.userGetTasksPaginated(socket.data.user, socket.data.device, offset, limit);
+                c(1, result);
+            } catch (error) {
+                Log.error("Failed to get tasks: " + error)
+                c(-1, { tasks: [], totalCount: 0 });
+            }
+        })
+
         socket.on('userPushTask', async (task: MaaTask, c: (res: any) => void) => {
             try {
                 const taskCache: MaaTaskCache = {
                     ...task,
+                    start: new Date(),
                     user: socket.data.user,
                     device: socket.data.device,
                     timeout: null as unknown as NodeJS.Timeout
                 };
-                await maaService.userPushCachedTasks(socket.data.user, socket.data.device, [taskCache]);
+                await maaService.userPushCachedTasks(socket.data.user, socket.data.device, [taskCache])
                 c(1);
             } catch (error) {
                 Log.error("Failed to push task:", error);
@@ -635,6 +725,17 @@ class MaaWSServer {
                 });
             })
         })
+
+        this.outerCaller.on('MAA_TASK_STATUS_CHANGED', (user, device, changedStatus: TaskStatus) => {
+            this.io.fetchSockets().then(sockets => { 
+                sockets.forEach(socket => {
+                    if (socket.data.user === user && socket.data.device === device) {
+                        socket.emit('MaaTaskStatusChanged', user, device, changedStatus, (res: number) => { });
+                    }
+                });
+            })
+        })
+
         this.outerCaller.on('error', (error) => {
             Log.error('OuterCaller Error: ' + error);
         })

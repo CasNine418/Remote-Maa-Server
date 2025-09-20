@@ -32,6 +32,6 @@ export interface MaaTask {
     payload: any;
     taskbind: string | false;
     snapshotbind: string | false;
-    start: number;
-    time: number;
+    start: Date;
+    time: Date;
 }

@@ -8,7 +8,7 @@ import cookieParser from 'cookie-parser';
 import bodyParaser from 'body-parser';
 
 import { Logger } from 'tslog';
-const Log = new Logger({ name: 'app' });
+const Log = new Logger({ name: 'app', hideLogPositionForProduction: true });
 
 import createHttpError from 'http-errors';
 import { sendClientMessage } from './utils/semd_msg';

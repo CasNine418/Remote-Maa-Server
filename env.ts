@@ -1,6 +1,6 @@
 import * as dotenv from 'dotenv';
 import { Logger } from 'tslog';
-const Log = new Logger({ name: 'env_config' });
+const Log = new Logger({ name: 'env_config', hideLogPositionForProduction: true });
 
 // Load environment variables
 dotenv.config();

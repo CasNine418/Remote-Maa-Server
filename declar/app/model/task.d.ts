@@ -6,6 +6,10 @@ export declare enum TaskStatus {
     CANCELED = 4,
     TIMEOUT = 5
 }
+export declare enum MaaReportTaskStatus {
+    SUCCESS = "SUCCESS",
+    FAILED = "FAILED"
+}
 export declare enum TaskType {
     CaptureImage = 0,
     CaptureImageNow = 1,
@@ -25,6 +29,16 @@ export declare enum TaskType {
 }
 export interface MaaTask {
     uuid: string;
+    status: TaskStatus;
+    type: TaskType;
+    payload: any;
+    taskbind: string | false;
+    snapshotbind: string | false;
+    start: Date;
+    time: Date;
+}
+export interface MaaGetTaskReturnTask {
+    id: string;
     status: TaskStatus;
     type: TaskType;
     payload: any;

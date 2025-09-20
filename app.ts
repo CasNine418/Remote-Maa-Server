@@ -12,13 +12,13 @@ const Log = new Logger({ name: 'app' });
 
 import createHttpError from 'http-errors';
 import { sendClientMessage } from './utils/semd_msg';
-import { MaaTask, TaskStatus, TaskType } from './app/model/task';
+import { MaaGetTaskReturnTask, MaaTask, TaskStatus, TaskType } from './app/model/task';
 import { In, Repository } from 'typeorm';
 import { User } from './orm/entity/user';
 import MaaAppDataSource from './orm';
 import { Task } from './orm/entity/task';
 import { Device } from './orm/entity/device';
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { ListBucketsCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import presigner from "@aws-sdk/s3-request-presigner";
 import { Server as IOServer, Socket } from 'socket.io';
 import * as promClient from 'prom-client';
@@ -34,7 +34,22 @@ const env = envConfig.server.nodeEnv;
 
 
 app.use(cors());
-app.use(bodyParaser.json());
+app.use(bodyParaser.json({ limit: '50mb' }));
+app.use(bodyParaser.urlencoded({ limit: '50mb', extended: true }));
+
+const httpRequestDuration = new promClient.Histogram({
+    name: 'http_request_duration_seconds',
+    help: 'Duration of HTTP requests in seconds',
+    labelNames: ['method', 'route', 'code'],
+});
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+    const end = httpRequestDuration.startTimer();
+    res.on('finish', () => {
+        end({ method: req.method, route: req.route?.path || req.path, code: res.statusCode });
+    });
+    next();
+});
 
 app.use(express.json({
     limit: '50mb',
@@ -56,6 +71,7 @@ class AWSS3Service {
         this.bucketName = bucketName;
         this.s3 = new S3Client({
             region: envConfig.s3.region!,
+            endpoint: envConfig.s3.endpoint!,
             credentials: {
                 accessKeyId: envConfig.s3.accessKeyId!,
                 secretAccessKey: envConfig.s3.secretAccessKey!
@@ -150,7 +166,7 @@ class AWSS3Service {
             Log.info(`Uploaded file successfully: ${key}`);
             return response;
         } catch (error) {
-            throw new Error('Failed to upload file');
+            throw new Error('Failed to upload file' + error);
         }
     }
 }
@@ -192,36 +208,40 @@ class MaaController {
     private async clearCachedTask(user: string, device: string, taskUuid: string, taskTimeout?: NodeJS.Timeout, status?: TaskStatus): Promise<void> {
         // const { uuid } = task;
 
-        if (status) {
-            const objTask = await this.taskRepository.findOne({
-                where: {
-                    uuid: taskUuid,
-                    device: {
-                        deviceId: device
+        try {
+            if (status) {
+                const objTask = await this.taskRepository.findOne({
+                    where: {
+                        uuid: taskUuid,
+                        device: {
+                            deviceId: device
+                        },
                     },
-                },
-                relations: {
-                    device: true
+                    relations: {
+                        device: true
+                    }
+                });
+
+                if (objTask) {
+                    objTask.status = status;
+                    await this.taskRepository.save(objTask);
                 }
-            });
-
-            if (objTask) {
-                objTask.status = status;
-                await this.taskRepository.save(objTask);
             }
-        }
 
-        if (taskTimeout) {
-            clearTimeout(taskTimeout);
-        }
-
-        const cacheKey = `${user}:${device}`;
-        if (this.pullTaskCache[cacheKey]) {
-            this.pullTaskCache[cacheKey] = this.pullTaskCache[cacheKey].filter(t => t.uuid !== taskUuid);
-
-            if (this.pullTaskCache[cacheKey].length === 0) {
-                delete this.pullTaskCache[cacheKey];
+            if (taskTimeout) {
+                clearTimeout(taskTimeout);
             }
+
+            const cacheKey = `${user}:${device}`;
+            if (this.pullTaskCache[cacheKey]) {
+                this.pullTaskCache[cacheKey] = this.pullTaskCache[cacheKey].filter(t => t.uuid !== taskUuid);
+
+                if (this.pullTaskCache[cacheKey].length === 0) {
+                    delete this.pullTaskCache[cacheKey];
+                }
+            }
+        } catch (error: any) {
+            throw new Error(error);
         }
     }
 
@@ -290,6 +310,17 @@ class MaaController {
         this.clearCachedTask(user, device, task.uuid);
     }
 
+    /**
+     * 更新数据库中的任务
+     * @param task
+     */
+    private async updateAreadySearchDatabaseTask(objTask: Task) {
+        // Log.debug(objTask.payload)
+        this.taskRepository.save(objTask)
+            .then(() => Log.info("Task updated " + objTask.uuid))
+            .catch(err => { throw new Error(err) })
+    }
+
     constructor() { }
 
     /**
@@ -300,7 +331,7 @@ class MaaController {
      * @param tasks 
      */
     public async userPushCachedTasks(user: string, device: string, tasks: MaaTaskCache[]): Promise<void> {
-        const ttl = 1000 * 60;
+        const ttl = 1000 * 10;
 
         tasks.forEach(task => {
             // task.status = TaskStatus.PENDING;
@@ -334,18 +365,24 @@ class MaaController {
      * @param device 
      * @returns 
      */
-    public async maaGetTask(user: string, device: string): Promise<MaaTask[]> {
+    public async maaGetTask(user: string, device: string): Promise<MaaGetTaskReturnTask[]> {
         const tasks = this.pullTaskCache[`${user}:${device}`] || [];
+        // Log.debug("Maa get task " + tasks.map(t => t.uuid) + "tasks" + tasks.length);
 
         tasks.forEach(task => {
             task.status = TaskStatus.PROGRESSING;
 
             const { user, device, timeout, ...taskData } = task;
 
+            clearTimeout(timeout);
+
             this.updateTaskToDatabase(user, device, taskData);
         })
 
-        return tasks.map(({ user, device, timeout, ...task }) => task);
+        return tasks.map(({ user, device, uuid, timeout, ...task }) => ({
+            id: uuid,
+            ...task
+        }));
     }
 
     /**
@@ -356,55 +393,69 @@ class MaaController {
      * @param taskStatus 
      */
     public async maaReportTask(user: string, device: string, taskUuid: string, taskStatus: TaskStatus, taskPayload: any): Promise<boolean> {
-        const cacheKey = `${user}:${device}`;
-        const tasks = this.pullTaskCache[cacheKey] || [];
 
-        const task = tasks.find(t => t.uuid === taskUuid);
+        const objTask = await this.taskRepository.findOne({
+            where: {
+                uuid: taskUuid,
+                device: {
+                    deviceId: device
+                },
+            },
+            relations: {
+                device: true
+            }
+        });
 
-        if (task) {
-            switch (task.type) {
+        if (objTask) {
+            objTask.time = new Date();
+            Log.debug(`[${device}] [${taskUuid}] [${objTask.type}] [${objTask.status}] [${taskStatus}] [${objTask.time}] [${objTask.start}]`);
+            switch (objTask.type) {
                 case TaskType.CaptureImage:
                 case TaskType.CaptureImageNow: {
-                    task.status = taskStatus;
+                    objTask.status = taskStatus;
 
                     if (taskStatus === TaskStatus.SUCCESS) {
                         const base64Str = taskPayload;
-                        task.time = new Date();
+                        objTask.time = new Date();
                         try {
                             const buffer = Buffer.from(base64Str, 'base64');
-                            const key = `Arknights/task_report_2/${user}/${device}/${task.uuid}.png`;
+                            const key = `Arknights/task_report_2/${user}/${device}/${objTask.uuid}.png`;
 
                             defaultS3Service.uploadFile(key, buffer, 'image/png')
                                 .then(() => {
-                                    task.payload = `https://cn-sy1.rains3.com/mirror.casninezh.com/Arknights/task_report_2/${user}/${device}/${task.uuid}.png`;
-                                    const { user: taskUser, device: taskDevice, timeout, ...taskData } = task;
-                                    this.updateTaskToDatabase(user, device, taskData);
+                                    objTask.payload = `https://cn-sy1.rains3.com/mirror.casninezh.com/Arknights/task_report_2/${user}/${objTask.device.deviceId}/${objTask.uuid}.png`;
+                                    this.updateAreadySearchDatabaseTask(objTask);
                                 })
                                 .catch(err => {
-                                    task.status = TaskStatus.FAILED;
-                                    task.payload = '';
-                                    const { user: taskUser, device: taskDevice, timeout, ...taskData } = task;
-                                    this.updateTaskToDatabase(user, device, taskData);
+                                    objTask.status = TaskStatus.FAILED;
+                                    objTask.payload = '';
+                                    Log.error(err);
+                                    this.updateAreadySearchDatabaseTask(objTask)
+                                        .catch(err => {
+                                            throw new Error(err);
+                                        });
                                 })
                         } catch (error) {
                             // Log.error(error);
                             throw new Error('Invalid base64 string');
                         }
                     }
+                    
+                    return true; // 添加 return 提前退出，防止进入 default
                 }
                 default: {
-                    task.status = taskStatus;
-                    task.payload = taskPayload;
-                    const { user, device, timeout, ...taskData } = task;
-
-                    this.updateTaskToDatabase(user, device, taskData)
+                    objTask.status = taskStatus;
+                    objTask.payload = taskPayload;
+                    Log.debug(`Task status ${objTask.status}`)
+                    this.updateAreadySearchDatabaseTask(objTask)
                         .catch(err => {
                             throw new Error(err);
                         });
-
                     return true;
                 }
             }
+        } else {
+            Log.warn(`Task ${taskUuid} not found`);
         }
 
         return false;
@@ -450,9 +501,9 @@ class MaaController {
      * @returns 
      */
     public async userGetTasksPaginated(
-        username: string, 
-        deviceId: string, 
-        offset: number = 0, 
+        username: string,
+        deviceId: string,
+        offset: number = 0,
         limit: number = 50
     ): Promise<{ tasks: MaaTask[], totalCount: number }> {
         const user = await this.userRepository.findOne({
@@ -530,7 +581,6 @@ class MaaController {
                 device.deviceId = deviceId;
                 device.user = user;
                 user.devices.push(device);
-                console.log('user', user.devices);
                 await this.userRepository.save(user);
                 return MaaController.UserInitState.NO_DEVICE;
             }
@@ -572,13 +622,50 @@ maaRouter.post('/getTask', (req: Request, res: Response, next: NextFunction) => 
     maaService.maaGetTask(user, device)
         .then(tasks => {
             const sendTasks = tasks.map(task => {
+                let typeName = TaskType[task.type];
+                // 处理LinkStart和Toolbox系列特殊值，将其转换为带连字符的格式
+                switch (typeName) {
+                    case "LinkStartBase":
+                        typeName = "LinkStart-Base";
+                        break;
+                    case "LinkStartWakeUp":
+                        typeName = "LinkStart-WakeUp";
+                        break;
+                    case "LinkStartCombat":
+                        typeName = "LinkStart-Combat";
+                        break;
+                    case "LinkStartRecruiting":
+                        typeName = "LinkStart-Recruiting";
+                        break;
+                    case "LinkStartMall":
+                        typeName = "LinkStart-Mall";
+                        break;
+                    case "LinkStartMission":
+                        typeName = "LinkStart-Mission";
+                        break;
+                    case "LinkStartAutoRoguelike":
+                        typeName = "LinkStart-AutoRoguelike";
+                        break;
+                    case "LinkStartReclamationAlgorithm":
+                        typeName = "LinkStart-ReclamationAlgorithm";
+                        break;
+                    case "ToolboxGachaOnce":
+                        typeName = "Toolbox-GachaOnce";
+                        break;
+                    case "ToolboxGachaTenTimes":
+                        typeName = "Toolbox-GachaTenTimes";
+                        break;
+                }
                 return {
                     ...task,
-                    type: TaskType[task.type],
+                    type: typeName
                 };
             });
             sendClientMessage.sendTaskMessage(res, 'OK', sendTasks);
-            busCaller.emit('MAA_TASK_GOT', user, device, tasks);
+            if (tasks.length > 0) {
+                busCaller.emit('MAA_TASK_GOT', user, device, tasks);
+                Log.info(`Got ${tasks.length} tasks from ${user}@${device}`);
+            }
         })
         .catch(err => {
             sendClientMessage.sendErrorMessage(res, 400, 'Failed to get tasks', {});
@@ -604,7 +691,8 @@ maaRouter.post('/reportStatus', (req: Request, res: Response, next: NextFunction
     maaService.maaReportTask(user, device, task, reportStatus(), req.body.payload)
         .then(() => {
             sendClientMessage.sendOKMessage(res, 'Task reported', {});
-            busCaller.emit('MAA_TASK_REPORTED', user, device, task);
+            // Log.debug(`Task ${task} reported, status: ${req.body.status} | ${reportStatus()}`);
+            busCaller.emit('MAA_TASK_REPORTED', user, device, task, reportStatus());
         })
         .catch((err) => {
             Log.error(err);
@@ -620,7 +708,7 @@ interface ServerToClientEvents {
     // 收到任务
     MaaReceiveTask: (user: string, device: string, tasks: MaaTask[], callback: (res: number) => void) => void;
     // 汇报任务
-    MaaReportTask: (user: string, device: string, task: string, callback: (res: number) => void) => void;
+    MaaReportTask: (user: string, device: string, task: string, status: TaskStatus, callback: (res: number) => void) => void;
     MaaTaskStatusChanged: (user: string, device: string, status: TaskStatus, callback: (res: number) => void) => void;
 }
 
@@ -716,18 +804,18 @@ class MaaWSServer {
             })
         })
 
-        this.outerCaller.on('MAA_TASK_REPORTED', (user, device, task: string) => {
+        this.outerCaller.on('MAA_TASK_REPORTED', (user, device, task: string, status: TaskStatus) => {
             this.io.fetchSockets().then(sockets => {
                 sockets.forEach(socket => {
                     if (socket.data.user === user && socket.data.device === device) {
-                        socket.emit('MaaReportTask', user, device, task, (res) => { });
+                        socket.emit('MaaReportTask', user, device, task, status, (res) => { });
                     }
                 });
             })
         })
 
         this.outerCaller.on('MAA_TASK_STATUS_CHANGED', (user, device, changedStatus: TaskStatus) => {
-            this.io.fetchSockets().then(sockets => { 
+            this.io.fetchSockets().then(sockets => {
                 sockets.forEach(socket => {
                     if (socket.data.user === user && socket.data.device === device) {
                         socket.emit('MaaTaskStatusChanged', user, device, changedStatus, (res: number) => { });
@@ -789,7 +877,7 @@ s.init();
 // error
 
 app.use((req: Request, res: Response, next: NextFunction) => {
-    next(createHttpError.NotFound("Can not find the requested resource"))
+    next(createHttpError.NotFound(`Can not find the requested resource: ${req.url}`))
 })
 
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
@@ -815,19 +903,6 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
 const port = normalizePort(envConfig.server.port);
 app.set('port', port);
 const mode = envConfig.server.mode;
-const httpRequestDuration = new promClient.Histogram({
-    name: 'http_request_duration_seconds',
-    help: 'Duration of HTTP requests in seconds',
-    labelNames: ['method', 'route', 'code'],
-});
-
-app.use((req: Request, res: Response, next: NextFunction) => {
-    const end = httpRequestDuration.startTimer();
-    res.on('finish', () => {
-        end({ method: req.method, route: req.route?.path || req.path, code: res.statusCode });
-    });
-    next();
-});
 
 /**
  * Create HTTP server.
@@ -921,4 +996,3 @@ function onListening(server: http.Server | https.Server) {
         : 'port ' + addr?.port;
     Log.info('Listening on ' + bind + ' in ' + process.env.MODE + ' mode');
 }
-

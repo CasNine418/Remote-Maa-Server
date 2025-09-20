@@ -19,6 +19,7 @@ const requiredEnvVars = [
     'DB_MYSQL_PASSWORD',
     'DB_MYSQL_DATABASE',
     'OSS_S3_REGION',
+    'OSS_S3_ENDPOINT',
     'OSS_S3_ACCESS_KEY',
     'OSS_S3_SECRET_KEY',
     'OSS_S3_BUCKET'
@@ -36,6 +37,7 @@ const criticalEnvVars = [
     'DB_MYSQL_PASSWORD',
     'DB_MYSQL_DATABASE',
     'OSS_S3_REGION',
+    'OSS_S3_ENDPOINT',
     'OSS_S3_ACCESS_KEY',
     'OSS_S3_SECRET_KEY',
     'OSS_S3_BUCKET'
@@ -77,6 +79,7 @@ export const envConfig = {
     // OSS/S3 configuration
     s3: {
         region: process.env.OSS_S3_REGION || '',
+        endpoint: process.env.OSS_S3_ENDPOINT || '',
         accessKeyId: process.env.OSS_S3_ACCESS_KEY || '',
         secretAccessKey: process.env.OSS_S3_SECRET_KEY || '',
         bucket: process.env.OSS_S3_BUCKET || '',

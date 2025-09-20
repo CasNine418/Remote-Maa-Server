@@ -6,9 +6,9 @@ export declare class Task {
     device: Device;
     status: TaskStatus;
     type: TaskType;
-    payload: object;
+    payload: string;
     taskbind: string;
     snapshotbind: string;
-    start: number;
-    time: number;
+    start: Date;
+    time: Date;
 }

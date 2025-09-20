@@ -20,8 +20,8 @@ export class Task {
     @Column()
     type!: TaskType;
 
-    @Column('json')
-    payload!: object;
+    @Column()
+    payload!: string;
 
     @Column()
     taskbind!: string;

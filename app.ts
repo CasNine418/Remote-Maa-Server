@@ -37,19 +37,20 @@ app.use(cors());
 app.use(bodyParaser.json({ limit: '50mb' }));
 app.use(bodyParaser.urlencoded({ limit: '50mb', extended: true }));
 
-const httpRequestDuration = new promClient.Histogram({
-    name: 'http_request_duration_seconds',
-    help: 'Duration of HTTP requests in seconds',
-    labelNames: ['method', 'route', 'code'],
-});
+// 监控，按需调用
+// const httpRequestDuration = new promClient.Histogram({
+//     name: 'http_request_duration_seconds',
+//     help: 'Duration of HTTP requests in seconds',
+//     labelNames: ['method', 'route', 'code'],
+// });
 
-app.use((req: Request, res: Response, next: NextFunction) => {
-    const end = httpRequestDuration.startTimer();
-    res.on('finish', () => {
-        end({ method: req.method, route: req.route?.path || req.path, code: res.statusCode });
-    });
-    next();
-});
+// app.use((req: Request, res: Response, next: NextFunction) => {
+//     const end = httpRequestDuration.startTimer();
+//     res.on('finish', () => {
+//         end({ method: req.method, route: req.route?.path || req.path, code: res.statusCode });
+//     });
+//     next();
+// });
 
 app.use(express.json({
     limit: '50mb',
@@ -61,8 +62,9 @@ app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// s3
-
+/**
+ * AWS S3 Service
+ */
 class AWSS3Service {
     private readonly s3: S3Client;
     private readonly bucketName: string;
@@ -79,6 +81,15 @@ class AWSS3Service {
         })
     }
 
+    /**
+     * 创建上传对象的命令
+     * @param key 对象的键名
+     * @param contentType 对象的内容类型
+     * @param options 上传选项
+     * @param options.acl 访问控制权限，默认为'public-read'
+     * @param options.metadata 对象元数据
+     * @returns PutObjectCommand实例
+     */
     private createUploadCommand(
         key: string,
         contentType: string,
@@ -182,6 +193,9 @@ interface MaaTaskCache extends MaaTask {
     timeout: NodeJS.Timeout;
 }
 
+/**
+ * MAA Controller
+ */
 class MaaController {
 
     private userRepository: Repository<User> = MaaAppDataSource.getRepository(User);
@@ -767,6 +781,11 @@ class MaaWSServer {
         }
     }
 
+    /**
+     * 绑定客户端到服务器的Socket事件处理函数
+     * @param socket 客户端连接的socket实例，用于监听和响应客户端事件
+     * @private
+     */
     private bindSubEvent(socket: Socket<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>) {
         socket.on('hello', (data: any) => {
             Log.debug(`${socket.data.user} ${socket.data.device} hello ${JSON.stringify(data)}`);
@@ -810,6 +829,20 @@ class MaaWSServer {
         })
     }
 
+    /**
+     * 初始化外部调用器的事件监听器
+     * 
+     * 该函数负责设置外部调用器的各种事件监听器，包括任务获取、任务报告、
+     * 任务状态变更等事件，并将这些事件转发给对应的socket客户端。
+     * 
+     * 监听的事件包括：
+     * - MAA_TASK_GOT: 当获取到新任务时触发
+     * - MAA_TASK_REPORTED: 当任务被报告时触发
+     * - MAA_TASK_STATUS_CHANGED: 当任务状态发生变更时触发
+     * - error: 当发生错误时触发
+     * 
+     * @private
+     */
     private callerTrigger() {
         this.outerCaller.on('MAA_TASK_GOT', (user, device, tasks: MaaTask[]) => {
             this.io.fetchSockets().then(sockets => {
@@ -846,6 +879,11 @@ class MaaWSServer {
         })
     }
 
+    /**
+     * 初始化WebSocket服务器
+     * 
+     * 程序入口
+     */
     public init() {
         // 监听 3001 端口
         this.server.listen(3001, () => {
@@ -917,7 +955,7 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
     }
 })
 
-// start
+// start express的模板代码
 
 /**
  * Get port from environment and store in Express.

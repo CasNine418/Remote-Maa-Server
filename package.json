@@ -1,6 +1,6 @@
 {
-   "name": "auth",
-   "version": "0.0.0",
+   "name": "Remote-Maa-Server",
+   "version": "1.0.0",
    "private": true,
    "main": "app.ts",
    "bin": "dist/app.js",

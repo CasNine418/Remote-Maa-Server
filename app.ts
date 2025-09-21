@@ -286,11 +286,12 @@ class MaaController {
         })
         objTask.device = objDevice;
 
-        this.taskRepository.save(objTask)
-            .then(() => { })
-            .catch((err) => {
-                throw new Error(err);
-            })
+        try {
+            await this.taskRepository.save(objTask);
+            Log.info(`Task created ` + objTask.uuid);
+        } catch (err) {
+            throw new Error(`Failed to save task: ${err}`);
+        }
     }
 
     /**
@@ -300,7 +301,6 @@ class MaaController {
      * @param task 
      */
     private async updateTaskToDatabase(user: string, device: string, task: MaaTask): Promise<void> {
-
         const objTask = await this.taskRepository.findOne({
             where: {
                 uuid: task.uuid,
@@ -315,11 +315,14 @@ class MaaController {
 
         if (objTask) {
             Object.assign(objTask, task);
-            this.taskRepository.save(objTask)
-                .then(() => Log.info("Task updated " + task.uuid))
-                .catch(err => { throw new Error(err) })
+            try {
+                await this.taskRepository.save(objTask);
+                Log.info("Task updated " + task.uuid);
+            } catch (err) {
+                throw new Error(`Failed to update task: ${err}`);
+            }
         } else {
-            throw new Error("Task not found")
+            throw new Error("Task not found");
         }
         this.clearCachedTask(user, device, task.uuid);
     }
@@ -347,31 +350,39 @@ class MaaController {
      * @param tasks 
      */
     public async userPushCachedTasks(user: string, device: string, tasks: MaaTaskCache[]): Promise<void> {
-        const ttl = 1000 * 10;
+        const ttl = 1000 * 15;
+        const cacheKey = `${user}:${device}`;
+        const errors: Error[] = [];
 
-        tasks.forEach(task => {
-            // task.status = TaskStatus.PENDING;
-            task.timeout = setTimeout(() => {
-                this.clearCachedTask(user, device, task.uuid, task.timeout, TaskStatus.TIMEOUT)
-                    .then(() => {
-                        busCaller.emit("MAA_TASK_STATUS_CHANGED", user, device, TaskStatus.TIMEOUT);
-                        Log.info("Clear cached task " + task.uuid);
-                    })
-                    .catch(err => { throw new Error(err) });
+        if (!this.pullTaskCache[cacheKey]) {
+            this.pullTaskCache[cacheKey] = [];
+        }
+
+        for (const task of tasks) {
+            task.timeout = setTimeout(async () => {
+                try {
+                    await this.clearCachedTask(user, device, task.uuid, task.timeout, TaskStatus.TIMEOUT);
+                    busCaller.emit("MAA_TASK_STATUS_CHANGED", user, device, TaskStatus.TIMEOUT);
+                    Log.info("Clear cached task " + task.uuid);
+                } catch (err) {
+                    Log.error(`Failed to clear cached task ${task.uuid}:`, err);
+                }
             }, ttl);
 
-            this.addTaskToDatabase(user, device, task)
-                .then(() => {
-                    if (this.pullTaskCache[`${user}:${device}`]) {
-                        this.pullTaskCache[`${user}:${device}`].push(task);
-                    } else {
-                        this.pullTaskCache[`${user}:${device}`] = [task];
-                    }
-                })
-                .catch(err => { throw new Error(err) })
-        })
+            try {
+                await this.addTaskToDatabase(user, device, task);
+                this.pullTaskCache[cacheKey].push(task);
+            } catch (err) {
+                clearTimeout(task.timeout);
+                Log.error(`Failed to add task to database:`, err);
+                errors.push(err as Error);
+            }
+        }
 
-        // return this.pullTaskCache[`${user}:${device}`];
+        if (errors.length > 0) {
+            const errorMessage = errors.map(e => e.message).join('; ');
+            throw new Error(`Multiple errors occurred: ${errorMessage}`);
+        }
     }
 
     /**
@@ -385,15 +396,25 @@ class MaaController {
         const tasks = this.pullTaskCache[`${user}:${device}`] || [];
         // Log.debug("Maa get task " + tasks.map(t => t.uuid) + "tasks" + tasks.length);
 
-        tasks.forEach(task => {
+        for (const task of tasks) {
             task.status = TaskStatus.PROGRESSING;
 
             const { user, device, timeout, ...taskData } = task;
 
             clearTimeout(timeout);
 
-            this.updateTaskToDatabase(user, device, taskData);
-        })
+            try {
+                await this.updateTaskToDatabase(user, device, taskData);
+            } catch (error) {
+                Log.warn(`First attempt to update task ${task.uuid} failed, retrying...`, error);
+                try {
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    await this.updateTaskToDatabase(user, device, taskData);
+                } catch (retryError) {
+                    Log.error(`Retry failed for task ${task.uuid}, operation terminated.`, retryError);
+                }
+            }
+        }
 
         return tasks.map(({ user, device, uuid, timeout, ...task }) => ({
             id: uuid,
@@ -761,7 +782,7 @@ class MaaWSServer {
     constructor(controller: MaaController, caller: Caller) {
         this.controller = controller;
         this.outerCaller = caller;
-        
+
         // 根据 mode 选择 HTTP 或 HTTPS 服务器
         const mode = envConfig.server.mode;
         if (mode === 'https') {
@@ -770,13 +791,13 @@ class MaaWSServer {
                 cert: fs.readFileSync(envConfig.ssl.certPath),
             };
             this.server = https.createServer(httpsOptions);
-            this.io = new IOServer<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(this.server, { 
-                cors: { origin: "*" } 
+            this.io = new IOServer<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(this.server, {
+                cors: { origin: "*" }
             });
         } else {
             this.server = http.createServer();
-            this.io = new IOServer<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(this.server, { 
-                cors: { origin: "*" } 
+            this.io = new IOServer<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(this.server, {
+                cors: { origin: "*" }
             });
         }
     }
@@ -848,30 +869,48 @@ class MaaWSServer {
             this.io.fetchSockets().then(sockets => {
                 sockets.forEach(socket => {
                     if (socket.data.user === user && socket.data.device === device) {
-                        socket.emit('MaaReceiveTask', user, device, tasks, (res) => { });
+                        try {
+                            socket.emit('MaaReceiveTask', user, device, tasks, (res) => { });
+                        } catch (emitError) {
+                            Log.error('Error emitting MaaReceiveTask:', emitError);
+                        }
                     }
                 });
-            })
+            }).catch(error => {
+                Log.error('Error fetching sockets:', error);
+            });
         })
 
         this.outerCaller.on('MAA_TASK_REPORTED', (user, device, task: string, status: TaskStatus) => {
             this.io.fetchSockets().then(sockets => {
                 sockets.forEach(socket => {
                     if (socket.data.user === user && socket.data.device === device) {
-                        socket.emit('MaaReportTask', user, device, task, status, (res) => { });
+                        try {
+                            socket.emit('MaaReportTask', user, device, task, status, (res) => { });
+                        } catch (emitError) {
+                            Log.error('Error emitting MaaReportTask:', emitError);
+                        }
                     }
                 });
-            })
+            }).catch(error => {
+                Log.error('Error fetching sockets:', error);
+            });
         })
 
         this.outerCaller.on('MAA_TASK_STATUS_CHANGED', (user, device, changedStatus: TaskStatus) => {
             this.io.fetchSockets().then(sockets => {
                 sockets.forEach(socket => {
                     if (socket.data.user === user && socket.data.device === device) {
-                        socket.emit('MaaTaskStatusChanged', user, device, changedStatus, (res: number) => { });
+                        try {
+                            socket.emit('MaaTaskStatusChanged', user, device, changedStatus, (res: number) => { });
+                        } catch (emitError) {
+                            Log.error('Error emitting MaaTaskStatusChanged:', emitError);
+                        }
                     }
                 });
-            })
+            }).catch(error => {
+                Log.error('Error fetching sockets:', error);
+            });
         })
 
         this.outerCaller.on('error', (error) => {
@@ -1056,3 +1095,12 @@ function onListening(server: http.Server | https.Server) {
         : 'port ' + addr?.port;
     Log.info('Listening on ' + bind + ' in ' + envConfig.server.mode + ' mode');
 }
+
+process.on('unhandledRejection', (reason, promise) => {
+    Log.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    Log.error('Uncaught Exception thrown:', error);
+    // process.exit(1);
+});

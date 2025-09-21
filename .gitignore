@@ -1,4 +1,5 @@
 /node_modules
 /cert/*
 /dist
+package-lock.json
 .env

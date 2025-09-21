@@ -22,7 +22,7 @@ MAA (明日方舟助手) 远程控制后端服务，提供任务管理、实时�
 ### 安装
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/CasNine418/Remote-Maa-Server.git
 cd <project-directory>
 npm install
 ```

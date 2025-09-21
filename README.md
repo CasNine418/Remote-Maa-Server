@@ -70,8 +70,6 @@ npm run start
 
 ## API文档
 
-### REST API
-
 - `POST /getTask` - 获取待执行任务
 - `POST /reportStatus` - 汇报任务执行状态
 

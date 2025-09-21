@@ -1,25 +1,27 @@
 # ReMote MAA Backend Service
 
-MAA (明日方舟助手) 远程控制后端服务，提供任务管理、实时通信和文件存储功能。
+[English](https://github.com/CasNine418/Remote-Maa-Server/blob/master/README.md) | [中文](https://github.com/CasNine418/Remote-Maa-Server/blob/master/README_zh_CN.md)
 
-## 技术栈
+MAA (MAA Assistant Arknights) remotely controls backend services, offering functionalities such as task management, real-time communication, and file storage.
+
+## Tech Stack
 
 - Node.js + TypeScript
 - Express.js
 - Socket.IO
 - TypeORM
 - AWS SDK
-- MySQL/MariaDB (通过TypeORM)
+- MySQL/MariaDB (via TypeORM)
 
-## 快速开始
+## Quick Start
 
-### 环境要求
+### Environment Requirements
 
-- Node.js >= 16 （AWS SDK 现在已经不支持Node16LTS，若可以请使用Node^18）
-- npm 或 pnpm
-- 数据库 (MySQL/MariaDB/PostgreSQL等TypeORM支持的数据库)
+- Node.js >= 16 (AWS SDK no longer supports Node 16 LTS; if possible, use Node ^18)
+- npm or pnpm
+- Database (MySQL/MariaDB/PostgreSQL or other databases supported by TypeORM)
 
-### 安装
+### Installation
 
 ```bash
 git clone https://github.com/CasNine418/Remote-Maa-Server.git
@@ -27,12 +29,12 @@ cd <project-directory>
 npm install
 ```
 
-### 配置
+### Configuration
 
-1. 复制 `.env.example` 到 `.env`
-2. 根据需要修改配置项
+1. Copy `.env.example` to `.env`
+2. Modify configuration items as needed
 
-具体声明可以查看env.ts文件
+For specific declarations, refer to the env.ts file.
 
 ```env
 # Common
@@ -60,50 +62,50 @@ OSS_S3_SECRET_KEY=your_secret_key
 OSS_S3_BUCKET=your_bucket_name
 ```
 
-### 启动
+### Starting the Service
 
 ```bash
 npm run start
 ```
 
-服务将监听配置文件中指定的端口。
+The service will listen on the port specified in the configuration file.
 
-## API文档
+## API Documentation
 
-- `POST /getTask` - 获取待执行任务
-- `POST /reportStatus` - 汇报任务执行状态
+- `POST /getTask` - Retrieve pending tasks
+- `POST /reportStatus` - Report task execution status
 
 ### WebSocket
 
-通过WebSocket连接可以实现实时通信，支持任务推送、状态更新等功能。
+Real-time communication can be achieved through WebSocket connections, supporting functionalities such as task pushing and status updates.
 
-## 项目结构
+## Project Structure
 
 ```
 .
-├── app.ts              # 主应用文件
-├── orm/                # 数据库实体和配置
-├── utils/              # 工具函数
-├── env.ts              # 环境配置处理
+├── app.ts              # Main application file
+├── orm/                # Database entities and configurations
+├── utils/              # Utility functions
+├── env.ts              # Environment configuration handling
 └── ...
 ```
 
-## 开发
+## Development
 
-## 配置说明
+## Configuration Descriptions
 
-环境变量配置项:
+Environment variable configuration items:
 
-- `PORT` - 服务端口
-- `MODE` - 运行模式 (http/https)
-- `DATABASE_MYSQL_*` - 数据库配置
-- `OSS_S3_*` - AWS S3配置
-- `SSL_*` - SSL证书路径 (HTTPS模式下)
+- `PORT` - Service port
+- `MODE` - Operation mode (http/https)
+- `DATABASE_MYSQL_*` - Database configurations
+- `OSS_S3_*` - AWS S3 configurations
+- `SSL_*` - SSL certificate paths (HTTPS mode only)
 
-## 贡献
+## Contributions
 
-欢迎提交Issue和Pull Request。
+Issues and Pull Requests are welcome.
 
-## 许可证
+## License
 
 [MIT License](LICENSE)

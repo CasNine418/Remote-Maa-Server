@@ -1,5 +1,5 @@
 import express, { NextFunction, Request, Response } from 'express';
-import path, { resolve } from 'path';
+import path from 'path';
 import http from 'http';
 import https from 'https';
 import fs from 'fs';
@@ -13,12 +13,12 @@ const Log = new Logger({ name: 'app', hideLogPositionForProduction: true });
 import createHttpError from 'http-errors';
 import { sendClientMessage } from './utils/semd_msg';
 import { MaaGetTaskReturnTask, MaaTask, TaskStatus, TaskType } from './app/model/task';
-import { In, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { User } from './orm/entity/user';
 import MaaAppDataSource from './orm';
 import { Task } from './orm/entity/task';
 import { Device } from './orm/entity/device';
-import { ListBucketsCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import presigner from "@aws-sdk/s3-request-presigner";
 import { Server as IOServer, Socket } from 'socket.io';
 import * as promClient from 'prom-client';
@@ -314,11 +314,13 @@ class MaaController {
      * 更新数据库中的任务
      * @param task
      */
-    private async updateAreadySearchDatabaseTask(objTask: Task) {
-        // Log.debug(objTask.payload)
-        this.taskRepository.save(objTask)
-            .then(() => Log.info("Task updated " + objTask.uuid))
-            .catch(err => { throw new Error(err) })
+    private async updateAreadySearchDatabaseTask(objTask: Task): Promise<void> {
+        try {
+            await this.taskRepository.save(objTask);
+            Log.info("Task updated " + objTask.uuid);
+        } catch (err) {
+            throw new Error(String(err));
+        }
     }
 
     constructor() { }
@@ -421,36 +423,24 @@ class MaaController {
                             const buffer = Buffer.from(base64Str, 'base64');
                             const key = `Arknights/task_report_2/${user}/${device}/${objTask.uuid}.png`;
 
-                            defaultS3Service.uploadFile(key, buffer, 'image/png')
-                                .then(() => {
-                                    objTask.payload = `https://cn-sy1.rains3.com/mirror.casninezh.com/Arknights/task_report_2/${user}/${objTask.device.deviceId}/${objTask.uuid}.png`;
-                                    this.updateAreadySearchDatabaseTask(objTask);
-                                })
-                                .catch(err => {
-                                    objTask.status = TaskStatus.FAILED;
-                                    objTask.payload = '';
-                                    Log.error(err);
-                                    this.updateAreadySearchDatabaseTask(objTask)
-                                        .catch(err => {
-                                            throw new Error(err);
-                                        });
-                                })
+                            await defaultS3Service.uploadFile(key, buffer, 'image/png');
+                            objTask.payload = `https://cn-sy1.rains3.com/mirror.casninezh.com/Arknights/task_report_2/${user}/${objTask.device.deviceId}/${objTask.uuid}.png`;
+                            await this.updateAreadySearchDatabaseTask(objTask);
                         } catch (error) {
-                            // Log.error(error);
-                            throw new Error('Invalid base64 string');
+                            objTask.status = TaskStatus.FAILED;
+                            objTask.payload = '';
+                            Log.error(error);
+                            await this.updateAreadySearchDatabaseTask(objTask);
                         }
                     }
-                    
-                    return true; // 添加 return 提前退出，防止进入 default
+
+                    return true;
                 }
                 default: {
                     objTask.status = taskStatus;
                     objTask.payload = taskPayload;
                     Log.debug(`Task status ${objTask.status}`)
-                    this.updateAreadySearchDatabaseTask(objTask)
-                        .catch(err => {
-                            throw new Error(err);
-                        });
+                    await this.updateAreadySearchDatabaseTask(objTask);
                     return true;
                 }
             }
@@ -523,7 +513,6 @@ class MaaController {
             throw new Error('Device not found');
         }
 
-        // 获取任务总数
         const totalCount = await this.taskRepository.count({
             where: {
                 device: {
@@ -532,7 +521,6 @@ class MaaController {
             }
         });
 
-        // 获取任务，按开始时间倒序排列，支持分页
         const tasks = await this.taskRepository.find({
             where: {
                 device: {
@@ -546,7 +534,6 @@ class MaaController {
             take: limit
         });
 
-        // 转换为MaaTask格式
         const maaTasks: MaaTask[] = tasks.map(task => ({
             uuid: task.uuid,
             status: task.status,
@@ -564,6 +551,12 @@ class MaaController {
         };
     }
 
+    /**
+     * 初始化用户
+     * @param username 
+     * @param deviceId 
+     * @returns 
+     */
     public async userInit(username: string, deviceId: string): Promise<typeof MaaController.UserInitState[keyof typeof MaaController.UserInitState]> {
 
         const user = await this.userRepository.findOne({
@@ -630,7 +623,6 @@ maaRouter.post('/getTask', (req: Request, res: Response, next: NextFunction) => 
         .then(tasks => {
             const sendTasks = tasks.map(task => {
                 let typeName = TaskType[task.type];
-                // 处理LinkStart和Toolbox系列特殊值，将其转换为带连字符的格式
                 switch (typeName) {
                     case "LinkStartBase":
                         typeName = "LinkStart-Base";
@@ -743,8 +735,9 @@ interface SocketData {
 
 class MaaWSServer {
     private controller: MaaController;
-    private io = new IOServer<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(3001, { cors: { origin: "*" } });
+    private io: IOServer<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
     private outerCaller: Caller;
+    private server: http.Server | https.Server;
 
     private static CallbackError = {
         INTERNAL_SERVER_ERROR: -1,
@@ -754,13 +747,24 @@ class MaaWSServer {
     constructor(controller: MaaController, caller: Caller) {
         this.controller = controller;
         this.outerCaller = caller;
-    }
-
-    private innerTimeout<T>(promise: Promise<T>, delay: number) {
-        const timeout = new Promise<T>((resolve, reject) => {
-            setTimeout(() => reject(new Error('timeout')), delay)
-        })
-        return Promise.race([promise, timeout]);
+        
+        // 根据 mode 选择 HTTP 或 HTTPS 服务器
+        const mode = envConfig.server.mode;
+        if (mode === 'https') {
+            const httpsOptions = {
+                key: fs.readFileSync(envConfig.ssl.keyPath),
+                cert: fs.readFileSync(envConfig.ssl.certPath),
+            };
+            this.server = https.createServer(httpsOptions);
+            this.io = new IOServer<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(this.server, { 
+                cors: { origin: "*" } 
+            });
+        } else {
+            this.server = http.createServer();
+            this.io = new IOServer<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(this.server, { 
+                cors: { origin: "*" } 
+            });
+        }
     }
 
     private bindSubEvent(socket: Socket<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>) {
@@ -843,6 +847,11 @@ class MaaWSServer {
     }
 
     public init() {
+        // 监听 3001 端口
+        this.server.listen(3001, () => {
+            Log.info(`WebSocket server listening on port 3001 in ${envConfig.server.mode} mode`);
+        });
+
         this.io.on('connection', (socket) => {
             Log.info("New connection: " + socket.id);
 
@@ -1007,5 +1016,5 @@ function onListening(server: http.Server | https.Server) {
     const bind = typeof addr === 'string'
         ? 'pipe ' + addr
         : 'port ' + addr?.port;
-    Log.info('Listening on ' + bind + ' in ' + process.env.MODE + ' mode');
+    Log.info('Listening on ' + bind + ' in ' + envConfig.server.mode + ' mode');
 }

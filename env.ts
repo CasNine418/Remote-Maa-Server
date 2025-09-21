@@ -55,9 +55,9 @@ if (missingCriticalEnvVars.length > 0) {
 export const envConfig = {
     // Server configuration
     server: {
-        mode: process.env.SERVER_MODE === '1' ? 'https' : 'http',
-        nodeEnv: process.env.SERVER_NODE_ENV === '1' ? 'production' : 'development',
-        port: parseInt(process.env.SERVER_PORT || '3000', 10),
+        mode: process.env.MODE === '1' ? 'https' : 'http',
+        nodeEnv: process.env.NODE_ENV === '1' ? 'production' : 'development',
+        port: parseInt(process.env.PORT || '3000', 10),
     },
 
     // SSL configuration

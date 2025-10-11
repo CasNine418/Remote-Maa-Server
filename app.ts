@@ -688,6 +688,11 @@ const maaRouter = express.Router();
 
 const MAA_USER_AGENT_REGEX = /^MaaWpfGui\/v\d+\.\d+\.\d+.*$/;
 
+const taskSchema = Joi.object({
+    user: Joi.string().pattern(/^[a-zA-Z0-9_]{1,30}$/).required(),
+    device: Joi.string().uuid().required()
+})
+
 maaRouter.post('/getTask', (req: Request, res: Response, next: NextFunction) => {
     const userAgent = req.get('User-Agent') || '';
     if (!MAA_USER_AGENT_REGEX.test(userAgent)) {
@@ -697,6 +702,12 @@ maaRouter.post('/getTask', (req: Request, res: Response, next: NextFunction) => 
     const { user, device } = req.body;
 
     if (!user || !device) {
+        sendClientMessage.sendErrorMessage(res, 400, 'Invalid request', null);
+        return;
+    }
+
+    const { error } = taskSchema.validate({ user, device });
+    if (error) {
         sendClientMessage.sendErrorMessage(res, 400, 'Invalid request', null);
         return;
     }
@@ -767,6 +778,12 @@ maaRouter.post('/reportStatus', (req: Request, res: Response, next: NextFunction
         return;
     }
 
+    const { error } = taskSchema.validate({ user, device });
+    if (error) {
+        sendClientMessage.sendErrorMessage(res, 400, 'Invalid request', {});
+        return;
+    }
+
     const reportStatus = () => {
         if (req.body.status === 'SUCCESS') {
             return TaskStatus.SUCCESS;
@@ -785,6 +802,17 @@ maaRouter.post('/reportStatus', (req: Request, res: Response, next: NextFunction
             Log.error(err);
             sendClientMessage.sendErrorMessage(res, 500, 'Internal server error', {});
         })
+})
+
+maaRouter.get('/health', (req: Request, res: Response, next: NextFunction) => {
+    const healthCheck = {
+        uptime: process.uptime(),
+        message: 'OK',
+        timestamp: Date.now(),
+        database: MaaAppDataSource.isInitialized ? 'connected' : 'disconnected'
+    }
+
+    sendClientMessage.sendOKMessage(res, 'OK', healthCheck);
 })
 
 app.use(maaRouter);
@@ -985,7 +1013,7 @@ class MaaWSServer {
                 const timeout = 10000;
                 let completed = false;
 
-                const schema = Joi.object({
+                const socketAuthSchema = Joi.object({
                     user: Joi.string().pattern(/^[a-zA-Z0-9_]{1,30}$/).required(),
                     device: Joi.string().uuid().required()
                 });
@@ -999,7 +1027,7 @@ class MaaWSServer {
                 }, timeout);
 
                 try {
-                    const { error } = schema.validate({ user, device });
+                    const { error } = socketAuthSchema.validate({ user, device });
                     
                     if (error) {
                         Log.warn(`Auth error for socket ${socket.id}:`, error);

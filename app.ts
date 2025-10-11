@@ -22,6 +22,8 @@ import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import presigner from "@aws-sdk/s3-request-presigner";
 import { Server as IOServer, Socket } from 'socket.io';
 import * as promClient from 'prom-client';
+import Joi from 'joi';
+import sharp from 'sharp';
 
 import * as dotenv from 'dotenv';
 import { EventEmitter } from 'stream';
@@ -122,6 +124,45 @@ class AWSS3Service {
     }
 
     /**
+     * 压缩图片Buffer
+     * @param buffer 原始图片Buffer
+     * @param options 压缩选项
+     * @returns 压缩后的Buffer
+     */
+    public async compressImage(
+        buffer: Buffer,
+        options: {
+            quality?: number;
+            format?: 'jpeg' | 'png' | 'webp';
+        } = {}
+    ): Promise<Buffer> {
+        const {
+            quality = 80,
+            format = 'jpeg'
+        } = options;
+
+        try {
+            let sharpInstance = sharp(buffer);
+            
+            switch (format) {
+                case 'jpeg':
+                    sharpInstance = sharpInstance.jpeg({ quality });
+                    break;
+                case 'png':
+                    sharpInstance = sharpInstance.png({ compressionLevel: Math.floor(quality / 10) });
+                    break;
+                case 'webp':
+                    sharpInstance = sharpInstance.webp({ quality });
+                    break;
+            }
+            
+            return await sharpInstance.toBuffer();
+        } catch (error) {
+            throw new Error('Failed to compress image: ' + error);
+        }
+    }
+
+    /**
      * 生成上传链接
      * @param key 
      * @param contentType 
@@ -169,6 +210,12 @@ class AWSS3Service {
             metadata?: Record<string, string>;
         } = {}
     ) {
+        try {
+            buffer = await this.compressImage(buffer, { quality: 80, format: 'jpeg' });
+        } catch (error) {
+            throw new Error('Failed to resolve picture: ' + error);
+        }
+
         const command = this.createUploadCommand(key, contentType, options);
         command.input.Body = buffer;
 
@@ -459,7 +506,7 @@ class MaaController {
                             const key = `Arknights/task_report_2/${user}/${device}/${objTask.uuid}.png`;
 
                             await defaultS3Service.uploadFile(key, buffer, 'image/png');
-                            objTask.payload = `https://cn-sy1.rains3.com/mirror.casninezh.com/Arknights/task_report_2/${user}/${objTask.device.deviceId}/${objTask.uuid}.png`;
+                            objTask.payload = `https://cn-sy1.rains3.com/mirror.casninezh.com/Arknights/task_report_2/${user}/${objTask.device.deviceId}/${objTask.uuid}.jpeg`;
                             await this.updateAreadySearchDatabaseTask(objTask);
                         } catch (error) {
                             objTask.status = TaskStatus.FAILED;
@@ -777,6 +824,8 @@ class MaaWSServer {
     private static CallbackError = {
         INTERNAL_SERVER_ERROR: -1,
         TIME_OUT: -2,
+        BAD_REQUEST: -3,
+        AUTH_VALID_FAILED: -4,
     } as const;
 
     constructor(controller: MaaController, caller: Caller) {
@@ -936,6 +985,11 @@ class MaaWSServer {
                 const timeout = 10000;
                 let completed = false;
 
+                const schema = Joi.object({
+                    user: Joi.string().pattern(/^[a-zA-Z0-9_]{1,30}$/).required(),
+                    device: Joi.string().uuid().required()
+                });
+
                 const timer = setTimeout(() => {
                     if (!completed) {
                         Log.warn(`Auth timeout for socket ${socket.id}`);
@@ -945,6 +999,15 @@ class MaaWSServer {
                 }, timeout);
 
                 try {
+                    const { error } = schema.validate({ user, device });
+                    
+                    if (error) {
+                        Log.warn(`Auth error for socket ${socket.id}:`, error);
+                        callback(MaaWSServer.CallbackError.AUTH_VALID_FAILED);
+                        socket.disconnect();
+                        return;
+                    }
+                    
                     const success = await this.controller.userInit(user, device);
                     completed = true;
                     clearTimeout(timer);

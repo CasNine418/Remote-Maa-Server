@@ -50,6 +50,7 @@ app.use(bodyParaser.urlencoded({ limit: '50mb', extended: true }));
 //     const end = httpRequestDuration.startTimer();
 //     res.on('finish', () => {
 //         end({ method: req.method, route: req.route?.path || req.path, code: res.statusCode });
+//         Log.info(`${req.method} ${req.ip} ${req.headers['user-agent']} ${req.path} ${res.statusCode} ${res.statusMessage} ${res.get('Content-Length')}`);
 //     });
 //     next();
 // });
@@ -441,7 +442,6 @@ class MaaController {
      */
     public async maaGetTask(user: string, device: string): Promise<MaaGetTaskReturnTask[]> {
         const tasks = this.pullTaskCache[`${user}:${device}`] || [];
-        // Log.debug("Maa get task " + tasks.map(t => t.uuid) + "tasks" + tasks.length);
 
         for (const task of tasks) {
             task.status = TaskStatus.PROGRESSING;
@@ -492,12 +492,11 @@ class MaaController {
 
         if (objTask) {
             objTask.time = new Date();
-            Log.debug(`[${device}] [${taskUuid}] [${objTask.type}] [${objTask.status}] [${taskStatus}] [${objTask.time}] [${objTask.start}]`);
             switch (objTask.type) {
                 case TaskType.CaptureImage:
                 case TaskType.CaptureImageNow: {
                     objTask.status = taskStatus;
-
+                    
                     if (taskStatus === TaskStatus.SUCCESS) {
                         const base64Str = taskPayload;
                         objTask.time = new Date();
@@ -506,7 +505,7 @@ class MaaController {
                             const key = `Arknights/task_report_2/${user}/${device}/${objTask.uuid}.png`;
 
                             await defaultS3Service.uploadFile(key, buffer, 'image/png');
-                            objTask.payload = `https://cn-sy1.rains3.com/mirror.casninezh.com/Arknights/task_report_2/${user}/${objTask.device.deviceId}/${objTask.uuid}.jpeg`;
+                            objTask.payload = `https://cn-sy1.rains3.com/mirror.casninezh.com/Arknights/task_report_2/${user}/${objTask.device.deviceId}/${objTask.uuid}.png`;
                             await this.updateAreadySearchDatabaseTask(objTask);
                         } catch (error) {
                             objTask.status = TaskStatus.FAILED;
@@ -521,7 +520,6 @@ class MaaController {
                 default: {
                     objTask.status = taskStatus;
                     objTask.payload = taskPayload;
-                    Log.debug(`Task status ${objTask.status}`)
                     await this.updateAreadySearchDatabaseTask(objTask);
                     return true;
                 }
@@ -697,6 +695,7 @@ maaRouter.post('/getTask', (req: Request, res: Response, next: NextFunction) => 
     const userAgent = req.get('User-Agent') || '';
     if (!MAA_USER_AGENT_REGEX.test(userAgent)) {
         sendClientMessage.sendErrorMessage(res, 403, 'Forbidden: Invalid User-Agent', null);
+        Log.warn(`Invalid User-Agent: ${req.method} ${req.ip} ${req.headers['user-agent']} ${req.path} ${res.statusCode} ${res.statusMessage} ${res.get('Content-Length')}`);
         return;
     }
     const { user, device } = req.body;
@@ -769,6 +768,7 @@ maaRouter.post('/reportStatus', (req: Request, res: Response, next: NextFunction
     const userAgent = req.get('User-Agent') || '';
     if (!MAA_USER_AGENT_REGEX.test(userAgent)) {
         sendClientMessage.sendErrorMessage(res, 403, 'Forbidden: Invalid User-Agent', null);
+        Log.warn(`Invalid User-Agent: ${req.method} ${req.ip} ${req.headers['user-agent']} ${req.path} ${res.statusCode} ${res.statusMessage} ${res.get('Content-Length')}`);
         return;
     }
 
@@ -795,7 +795,6 @@ maaRouter.post('/reportStatus', (req: Request, res: Response, next: NextFunction
     maaService.maaReportTask(user, device, task, reportStatus(), req.body.payload)
         .then(() => {
             sendClientMessage.sendOKMessage(res, 'Task reported', {});
-            // Log.debug(`Task ${task} reported, status: ${req.body.status} | ${reportStatus()}`);
             busCaller.emit('MAA_TASK_REPORTED', user, device, task, reportStatus());
         })
         .catch((err) => {
@@ -1077,11 +1076,9 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
     if (err instanceof SyntaxError && 'body' in err) {
         sendClientMessage.sendErrorMessage(res, 400, "Invalid JSON", {});
         Log.error(err.message);
-        Log.debug(err);
     } else {
         sendClientMessage.sendErrorMessage(res, err.status || 500, err.message, {});
         Log.error(err.message);
-        Log.debug(err);
     }
 })
 

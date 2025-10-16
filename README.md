@@ -1,4 +1,4 @@
-# ReMote MAA Backend Service
+# Remote MAA Backend Service
 
 [English](https://github.com/CasNine418/Remote-Maa-Server/blob/master/README.md) | [中文](https://github.com/CasNine418/Remote-Maa-Server/blob/master/README_zh_CN.md)
 

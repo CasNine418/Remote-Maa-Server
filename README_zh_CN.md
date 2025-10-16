@@ -11,13 +11,13 @@ MAA (明日方舟助手) 远程控制后端服务，提供任务管理、实时�
 - Socket.IO
 - TypeORM
 - AWS SDK
-- MySQL/MariaDB (通过TypeORM)
+- MySQL... (通过TypeORM)
 
 ## 快速开始
 
 ### 环境要求
 
-- Node.js >= 16 （AWS SDK 现在已经不支持Node16LTS，若可以请使用Node^18）
+- Node.js >= 18.17.0 （Sharp 图像处理要求Node 18.17.0以上版本，若无法安装请回退到Tag 1.0.1的发行）
 - npm 或 pnpm
 - 数据库 (MySQL/MariaDB/PostgreSQL等TypeORM支持的数据库)
 

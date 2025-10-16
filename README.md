@@ -11,13 +11,13 @@ MAA (MAA Assistant Arknights) remotely controls backend services, offering funct
 - Socket.IO
 - TypeORM
 - AWS SDK
-- MySQL/MariaDB (via TypeORM)
+- MySQL... (via TypeORM)
 
 ## Quick Start
 
 ### Environment Requirements
 
-- Node.js >= 16 (AWS SDK no longer supports Node 16 LTS; if possible, use Node ^18)
+- Node.js >= 18.17.0 (Sharp image processing lib package requires Node.js 18.17.0 or higher. If installation fails, please fall back to Tag 1.0.1 release)
 - npm or pnpm
 - Database (MySQL/MariaDB/PostgreSQL or other databases supported by TypeORM)
 

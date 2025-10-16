@@ -22,6 +22,8 @@ import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import presigner from "@aws-sdk/s3-request-presigner";
 import { Server as IOServer, Socket } from 'socket.io';
 import * as promClient from 'prom-client';
+import Joi from 'joi';
+import sharp from 'sharp';
 
 import * as dotenv from 'dotenv';
 import { EventEmitter } from 'stream';
@@ -48,6 +50,7 @@ app.use(bodyParaser.urlencoded({ limit: '50mb', extended: true }));
 //     const end = httpRequestDuration.startTimer();
 //     res.on('finish', () => {
 //         end({ method: req.method, route: req.route?.path || req.path, code: res.statusCode });
+//         Log.info(`${req.method} ${req.ip} ${req.headers['user-agent']} ${req.path} ${res.statusCode} ${res.statusMessage} ${res.get('Content-Length')}`);
 //     });
 //     next();
 // });
@@ -122,6 +125,45 @@ class AWSS3Service {
     }
 
     /**
+     * 压缩图片Buffer
+     * @param buffer 原始图片Buffer
+     * @param options 压缩选项
+     * @returns 压缩后的Buffer
+     */
+    public async compressImage(
+        buffer: Buffer,
+        options: {
+            quality?: number;
+            format?: 'jpeg' | 'png' | 'webp';
+        } = {}
+    ): Promise<Buffer> {
+        const {
+            quality = 80,
+            format = 'jpeg'
+        } = options;
+
+        try {
+            let sharpInstance = sharp(buffer);
+            
+            switch (format) {
+                case 'jpeg':
+                    sharpInstance = sharpInstance.jpeg({ quality });
+                    break;
+                case 'png':
+                    sharpInstance = sharpInstance.png({ compressionLevel: Math.floor(quality / 10) });
+                    break;
+                case 'webp':
+                    sharpInstance = sharpInstance.webp({ quality });
+                    break;
+            }
+            
+            return await sharpInstance.toBuffer();
+        } catch (error) {
+            throw new Error('Failed to compress image: ' + error);
+        }
+    }
+
+    /**
      * 生成上传链接
      * @param key 
      * @param contentType 
@@ -169,6 +211,12 @@ class AWSS3Service {
             metadata?: Record<string, string>;
         } = {}
     ) {
+        try {
+            buffer = await this.compressImage(buffer, { quality: 80, format: 'jpeg' });
+        } catch (error) {
+            throw new Error('Failed to resolve picture: ' + error);
+        }
+
         const command = this.createUploadCommand(key, contentType, options);
         command.input.Body = buffer;
 
@@ -394,7 +442,6 @@ class MaaController {
      */
     public async maaGetTask(user: string, device: string): Promise<MaaGetTaskReturnTask[]> {
         const tasks = this.pullTaskCache[`${user}:${device}`] || [];
-        // Log.debug("Maa get task " + tasks.map(t => t.uuid) + "tasks" + tasks.length);
 
         for (const task of tasks) {
             task.status = TaskStatus.PROGRESSING;
@@ -445,12 +492,11 @@ class MaaController {
 
         if (objTask) {
             objTask.time = new Date();
-            Log.debug(`[${device}] [${taskUuid}] [${objTask.type}] [${objTask.status}] [${taskStatus}] [${objTask.time}] [${objTask.start}]`);
             switch (objTask.type) {
                 case TaskType.CaptureImage:
                 case TaskType.CaptureImageNow: {
                     objTask.status = taskStatus;
-
+                    
                     if (taskStatus === TaskStatus.SUCCESS) {
                         const base64Str = taskPayload;
                         objTask.time = new Date();
@@ -474,7 +520,6 @@ class MaaController {
                 default: {
                     objTask.status = taskStatus;
                     objTask.payload = taskPayload;
-                    Log.debug(`Task status ${objTask.status}`)
                     await this.updateAreadySearchDatabaseTask(objTask);
                     return true;
                 }
@@ -641,15 +686,27 @@ const maaRouter = express.Router();
 
 const MAA_USER_AGENT_REGEX = /^MaaWpfGui\/v\d+\.\d+\.\d+.*$/;
 
+const taskSchema = Joi.object({
+    user: Joi.string().pattern(/^[a-zA-Z0-9_]{1,30}$/).required(),
+    device: Joi.string().uuid().required()
+})
+
 maaRouter.post('/getTask', (req: Request, res: Response, next: NextFunction) => {
     const userAgent = req.get('User-Agent') || '';
     if (!MAA_USER_AGENT_REGEX.test(userAgent)) {
         sendClientMessage.sendErrorMessage(res, 403, 'Forbidden: Invalid User-Agent', null);
+        Log.warn(`Invalid User-Agent: ${req.method} ${req.ip} ${req.headers['user-agent']} ${req.path} ${res.statusCode} ${res.statusMessage} ${res.get('Content-Length')}`);
         return;
     }
     const { user, device } = req.body;
 
     if (!user || !device) {
+        sendClientMessage.sendErrorMessage(res, 400, 'Invalid request', null);
+        return;
+    }
+
+    const { error } = taskSchema.validate({ user, device });
+    if (error) {
         sendClientMessage.sendErrorMessage(res, 400, 'Invalid request', null);
         return;
     }
@@ -711,11 +768,18 @@ maaRouter.post('/reportStatus', (req: Request, res: Response, next: NextFunction
     const userAgent = req.get('User-Agent') || '';
     if (!MAA_USER_AGENT_REGEX.test(userAgent)) {
         sendClientMessage.sendErrorMessage(res, 403, 'Forbidden: Invalid User-Agent', null);
+        Log.warn(`Invalid User-Agent: ${req.method} ${req.ip} ${req.headers['user-agent']} ${req.path} ${res.statusCode} ${res.statusMessage} ${res.get('Content-Length')}`);
         return;
     }
 
     const { user, device, task } = req.body;
     if (!user || !device || !task) {
+        sendClientMessage.sendErrorMessage(res, 400, 'Invalid request', {});
+        return;
+    }
+
+    const { error } = taskSchema.validate({ user, device });
+    if (error) {
         sendClientMessage.sendErrorMessage(res, 400, 'Invalid request', {});
         return;
     }
@@ -731,13 +795,23 @@ maaRouter.post('/reportStatus', (req: Request, res: Response, next: NextFunction
     maaService.maaReportTask(user, device, task, reportStatus(), req.body.payload)
         .then(() => {
             sendClientMessage.sendOKMessage(res, 'Task reported', {});
-            // Log.debug(`Task ${task} reported, status: ${req.body.status} | ${reportStatus()}`);
             busCaller.emit('MAA_TASK_REPORTED', user, device, task, reportStatus());
         })
         .catch((err) => {
             Log.error(err);
             sendClientMessage.sendErrorMessage(res, 500, 'Internal server error', {});
         })
+})
+
+maaRouter.get('/health', (req: Request, res: Response, next: NextFunction) => {
+    const healthCheck = {
+        uptime: process.uptime(),
+        message: 'OK',
+        timestamp: Date.now(),
+        database: MaaAppDataSource.isInitialized ? 'connected' : 'disconnected'
+    }
+
+    sendClientMessage.sendOKMessage(res, 'OK', healthCheck);
 })
 
 app.use(maaRouter);
@@ -777,6 +851,8 @@ class MaaWSServer {
     private static CallbackError = {
         INTERNAL_SERVER_ERROR: -1,
         TIME_OUT: -2,
+        BAD_REQUEST: -3,
+        AUTH_VALID_FAILED: -4,
     } as const;
 
     constructor(controller: MaaController, caller: Caller) {
@@ -936,6 +1012,11 @@ class MaaWSServer {
                 const timeout = 10000;
                 let completed = false;
 
+                const socketAuthSchema = Joi.object({
+                    user: Joi.string().pattern(/^[a-zA-Z0-9_]{1,30}$/).required(),
+                    device: Joi.string().uuid().required()
+                });
+
                 const timer = setTimeout(() => {
                     if (!completed) {
                         Log.warn(`Auth timeout for socket ${socket.id}`);
@@ -945,6 +1026,15 @@ class MaaWSServer {
                 }, timeout);
 
                 try {
+                    const { error } = socketAuthSchema.validate({ user, device });
+                    
+                    if (error) {
+                        Log.warn(`Auth error for socket ${socket.id}:`, error);
+                        callback(MaaWSServer.CallbackError.AUTH_VALID_FAILED);
+                        socket.disconnect();
+                        return;
+                    }
+                    
                     const success = await this.controller.userInit(user, device);
                     completed = true;
                     clearTimeout(timer);
@@ -986,11 +1076,9 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
     if (err instanceof SyntaxError && 'body' in err) {
         sendClientMessage.sendErrorMessage(res, 400, "Invalid JSON", {});
         Log.error(err.message);
-        Log.debug(err);
     } else {
         sendClientMessage.sendErrorMessage(res, err.status || 500, err.message, {});
         Log.error(err.message);
-        Log.debug(err);
     }
 })
 
